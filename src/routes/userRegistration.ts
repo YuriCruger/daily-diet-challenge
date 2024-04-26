@@ -17,6 +17,12 @@ export async function userRegistrationRoutes(app: FastifyInstance) {
     try {
       const { email, name, password } = createUserBodySchema.parse(request.body)
 
+      const checkUserExists = await knex('users').where('email', email).first()
+
+      if (checkUserExists) {
+        return reply.status(400).send({ message: 'User already exists' })
+      }
+
       const hashedPassword = await hash(password, 8)
 
       let sessionId = request.cookies.sessionId

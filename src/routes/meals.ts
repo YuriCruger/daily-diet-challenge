@@ -16,11 +16,10 @@ export async function mealsRoutes(app: FastifyInstance) {
         hour: z.string().min(1, 'Hour is required'),
         date: z.string(),
         isDiet: z.boolean(),
-        userId: z.string().min(1, 'UserId is required'),
       })
 
       try {
-        const { name, description, userId, hour, date, isDiet } =
+        const { name, description, hour, date, isDiet } =
           createMealBodySchema.parse(request.body)
 
         const dateTime = moment(`${date} ${hour}`, 'YYYY-MM-DD HH:mm').format()
@@ -29,7 +28,7 @@ export async function mealsRoutes(app: FastifyInstance) {
           id: randomUUID(),
           name,
           description,
-          user_id: userId,
+          user_id: request.user?.id,
           date_time: dateTime,
           is_diet: isDiet,
         })
@@ -56,43 +55,39 @@ export async function mealsRoutes(app: FastifyInstance) {
     },
   )
 
-  app.get(
-    '/:userId',
-    { preHandler: [checkSessionIdExists] },
-    async (request) => {
-      const getMealsParamsSchema = z.object({
-        userId: z.string(),
-      })
-      const { userId } = getMealsParamsSchema.parse(request.params)
+  app.get('/', { preHandler: [checkSessionIdExists] }, async (request) => {
+    const meals = await knex('meals')
+      .where('user_id', request.user?.id)
+      .select()
 
-      const meals = await knex('meals').where('user_id', userId).select()
-
-      return { meals }
-    },
-  )
+    return { meals }
+  })
 
   app.get(
-    '/:userId/:mealId',
+    '/:mealId',
     { preHandler: [checkSessionIdExists] },
-    async (request) => {
-      const getUnicMealParamsSchema = z.object({
-        userId: z.string(),
-        mealId: z.string(),
+    async (request, reply) => {
+      const getUniqueMealParamsSchema = z.object({
+        mealId: z.string().uuid(),
       })
 
-      const { mealId, userId } = getUnicMealParamsSchema.parse(request.params)
+      const { mealId } = getUniqueMealParamsSchema.parse(request.params)
 
       const meal = await knex('meals').where({
-        user_id: userId,
+        user_id: request.user?.id,
         id: mealId,
       })
 
-      return { meal }
+      if (!meal) {
+        return reply.status(404).send({ error: 'Meal not found' })
+      }
+
+      return reply.send({ meal })
     },
   )
 
   app.patch(
-    '/:userId/:mealId',
+    '/:mealId',
     { preHandler: [checkSessionIdExists] },
     async (request, reply) => {
       const updateMealBodySchema = z.object({
@@ -104,20 +99,30 @@ export async function mealsRoutes(app: FastifyInstance) {
       })
 
       const urlParamsSchema = z.object({
-        userId: z.string(),
-        mealId: z.string(),
+        mealId: z.string().uuid(),
       })
 
-      const { userId, mealId } = urlParamsSchema.parse(request.params)
+      const { mealId } = urlParamsSchema.parse(request.params)
       const { date, description, hour, isDiet, name } =
         updateMealBodySchema.parse(request.body)
 
       try {
         const dateTime = moment(`${date} ${hour}`, 'YYYY-MM-DD HH:mm').format()
 
+        const meal = await knex('meals')
+          .where({
+            user_id: request.user?.id,
+            id: mealId,
+          })
+          .first()
+
+        if (!meal) {
+          return reply.status(404).send({ error: 'Meal not found' })
+        }
+
         await knex('meals')
           .where({
-            user_id: userId,
+            user_id: request.user?.id,
             id: mealId,
           })
           .update({
@@ -142,20 +147,30 @@ export async function mealsRoutes(app: FastifyInstance) {
   )
 
   app.delete(
-    '/:userId/:mealId',
+    '/:mealId',
     { preHandler: [checkSessionIdExists] },
     async (request, reply) => {
       const deleteMealParamsSchema = z.object({
-        userId: z.string(),
-        mealId: z.string(),
+        mealId: z.string().uuid(),
       })
 
-      const { userId, mealId } = deleteMealParamsSchema.parse(request.params)
+      const { mealId } = deleteMealParamsSchema.parse(request.params)
 
       try {
+        const meal = await knex('meals')
+          .where({
+            user_id: request.user?.id,
+            id: mealId,
+          })
+          .first()
+
+        if (!meal) {
+          return reply.status(404).send({ error: 'Meal not found' })
+        }
+
         await knex('meals')
           .where({
-            user_id: userId,
+            user_id: request.user?.id,
             id: mealId,
           })
           .del()
@@ -174,34 +189,33 @@ export async function mealsRoutes(app: FastifyInstance) {
   )
 
   app.get(
-    '/:userId/metrics',
+    '/metrics',
     { preHandler: [checkSessionIdExists] },
     async (request, reply) => {
-      const getMetricsParamsSchema = z.object({
-        userId: z.string(),
-      })
-
-      const { userId } = getMetricsParamsSchema.parse(request.params)
-
       try {
-        const totalMeals = await knex('meals').where('user_id', userId).count()
+        const totalMeals = await knex('meals')
+          .where('user_id', request.user?.id)
+          .count('id', { as: 'total' })
+          .first()
 
         const dietMeals = await knex('meals')
           .where({
-            user_id: userId,
+            user_id: request.user?.id,
             is_diet: true,
           })
-          .count()
+          .count('id', { as: 'total' })
+          .first()
 
         const nonDietMeals = await knex('meals')
           .where({
-            user_id: userId,
+            user_id: request.user?.id,
             is_diet: false,
           })
-          .count()
+          .count('id', { as: 'total' })
+          .first()
 
         const meals = await knex('meals')
-          .where('user_id', userId)
+          .where('user_id', request.user?.id)
           .orderBy('date_time', 'asc')
 
         let currentStreak = 0
@@ -219,9 +233,9 @@ export async function mealsRoutes(app: FastifyInstance) {
         }
 
         return reply.status(200).send({
-          totalMeals: totalMeals[0]['count(*)'],
-          dietMeals: dietMeals[0]['count(*)'],
-          nonDietMeals: nonDietMeals[0]['count(*)'],
+          totalMeals: totalMeals?.total,
+          dietMeals: dietMeals?.total,
+          nonDietMeals: nonDietMeals?.total,
           bestDietStreak: bestStreak,
         })
       } catch (error) {
